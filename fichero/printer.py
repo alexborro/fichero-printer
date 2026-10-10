@@ -9,9 +9,11 @@ Device class: AiYinNormalDevice (LuckPrinter SDK)
 import asyncio
 import sys
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from bleak import BleakClient, BleakGATTCharacteristic, BleakScanner
+from bleak.backends.device import BLEDevice
+from bleak.exc import BleakDBusError
 
 # --- RFCOMM (Classic Bluetooth) support - Linux + Windows (Python 3.9+) ---
 
@@ -85,6 +87,97 @@ async def find_printer() -> str:
             print(f"  Found {d.name} at {d.address}")
             return d.address
     raise PrinterNotFound("No Fichero/D11s printer found. Is it turned on?")
+
+
+# --- BlueZ LE-only connect (Linux) ---
+#
+# The printer advertises over BLE without the "BR/EDR not supported" flag, so
+# BlueZ treats it as dual-mode. Before 5.77 (no PreferredBearer), Device1.Connect
+# brings up the LE link, then also tries BR/EDR profiles, fails with
+# "br-connection-profile-unavailable" and tears the whole connection down.
+# Adapter1.ConnectDevice connects over LE only, but it is an experimental API:
+# bluetoothd needs "Experimental = true" in /etc/bluetooth/main.conf.
+
+BLUEZ_BR_PROFILE_ERROR = "br-connection-profile-unavailable"
+
+
+def _is_bluez_br_profile_error(exc: BaseException) -> bool:
+    return (
+        sys.platform == "linux"
+        and isinstance(exc, BleakDBusError)
+        and exc.dbus_error_details == BLUEZ_BR_PROFILE_ERROR
+    )
+
+
+async def _bluez_connect_le(address: str) -> BLEDevice:
+    """Open an LE-only link via Adapter1.ConnectDevice. Returns a BLEDevice for it."""
+    from dbus_fast import BusType, Message, MessageType, Variant
+    from dbus_fast.aio import MessageBus
+
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+
+        async def call(path, interface, member, signature="", body=()):
+            reply = await bus.call(
+                Message(
+                    destination="org.bluez",
+                    path=path,
+                    interface=interface,
+                    member=member,
+                    signature=signature,
+                    body=list(body),
+                )
+            )
+            if reply.message_type == MessageType.ERROR:
+                raise BleakDBusError(reply.error_name, reply.body)
+            return reply.body
+
+        (objects,) = await call("/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects")
+        suffix = "/dev_" + address.upper().replace(":", "_")
+        device_path = next((p for p in objects if p.endswith(suffix)), None)
+        address_type = "public"
+
+        if device_path is not None:
+            props = objects[device_path]["org.bluez.Device1"]
+            if props["Connected"].value:
+                return BLEDevice(address, None, {"path": device_path, "props": {}})
+            if props["Paired"].value:
+                raise PrinterError(
+                    f"{address} is paired as a dual-mode device; BlueZ keeps picking "
+                    f"BR/EDR for it. Remove it (bluetoothctl remove {address}) and retry."
+                )
+            address_type = props["AddressType"].value
+            adapter_path = device_path.rsplit("/", 1)[0]
+            # ConnectDevice refuses addresses BlueZ already knows about. This
+            # entry is an unpaired cache object, so dropping it loses nothing.
+            await call(adapter_path, "org.bluez.Adapter1", "RemoveDevice", "o", [device_path])
+        else:
+            adapter_path = next(
+                (p for p, ifaces in objects.items() if "org.bluez.Adapter1" in ifaces), None
+            )
+            if adapter_path is None:
+                raise PrinterError("No Bluetooth adapter found")
+
+        try:
+            (device_path,) = await call(
+                adapter_path,
+                "org.bluez.Adapter1",
+                "ConnectDevice",
+                "a{sv}",
+                [{"Address": Variant("s", address), "AddressType": Variant("s", address_type)}],
+            )
+        except BleakDBusError as e:
+            if e.dbus_error == "org.freedesktop.DBus.Error.UnknownMethod":
+                raise PrinterError(
+                    "BlueZ tried to connect over Classic Bluetooth and failed. The LE-only "
+                    "workaround needs bluetoothd's experimental API: set "
+                    "'Experimental = true' under [General] in /etc/bluetooth/main.conf, "
+                    "then run 'sudo systemctl restart bluetooth'."
+                ) from e
+            raise
+        return BLEDevice(address, None, {"path": device_path, "props": {}})
+    finally:
+        bus.disconnect()
 
 
 # --- Status ---
@@ -374,7 +467,16 @@ async def connect(
             yield pc
     else:
         addr = address or await find_printer()
-        async with BleakClient(addr) as client:
+        async with AsyncExitStack() as stack:
+            try:
+                client = await stack.enter_async_context(BleakClient(addr))
+            except BleakDBusError as e:
+                if not _is_bluez_br_profile_error(e):
+                    raise
+                print("BlueZ picked Classic Bluetooth, retrying over LE only...")
+                client = await stack.enter_async_context(
+                    BleakClient(await _bluez_connect_le(addr))
+                )
             pc = PrinterClient(client)
             await pc.start()
             yield pc

@@ -1,0 +1,88 @@
+"""Tests for the BlueZ LE-only connect fallback."""
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from bleak.exc import BleakDBusError
+
+from fichero.printer import PrinterClient, _is_bluez_br_profile_error, connect
+
+ADDR = "AA:BB:CC:DD:EE:FF"
+BR_ERROR = BleakDBusError("org.bluez.Error.NotAvailable", ["br-connection-profile-unavailable"])
+
+
+def _mock_bleak(enter_side_effect=None):
+    client = AsyncMock()
+    client.__aenter__ = AsyncMock(return_value=client, side_effect=enter_side_effect)
+    client.__aexit__ = AsyncMock(return_value=None)
+    client.start_notify = AsyncMock()
+    return client
+
+
+class TestIsBlueZBrProfileError:
+    def test_matches_on_linux(self):
+        with patch("fichero.printer.sys.platform", "linux"):
+            assert _is_bluez_br_profile_error(BR_ERROR)
+
+    def test_ignored_off_linux(self):
+        with patch("fichero.printer.sys.platform", "darwin"):
+            assert not _is_bluez_br_profile_error(BR_ERROR)
+
+    def test_other_dbus_errors_ignored(self):
+        err = BleakDBusError("org.bluez.Error.Failed", ["le-connection-abort-by-local"])
+        with patch("fichero.printer.sys.platform", "linux"):
+            assert not _is_bluez_br_profile_error(err)
+
+
+class TestConnectFallback:
+    @pytest.mark.asyncio
+    async def test_retries_over_le_on_br_profile_error(self):
+        failing = _mock_bleak(enter_side_effect=BR_ERROR)
+        working = _mock_bleak()
+        le_device = MagicMock()
+
+        with (
+            patch("fichero.printer.sys.platform", "linux"),
+            patch("fichero.printer.BleakClient", side_effect=[failing, working]) as mock_cls,
+            patch("fichero.printer._bluez_connect_le", AsyncMock(return_value=le_device)) as mock_le,
+        ):
+            async with connect(ADDR) as pc:
+                assert isinstance(pc, PrinterClient)
+                assert pc.client is working
+
+        mock_le.assert_awaited_once_with(ADDR)
+        assert mock_cls.call_args_list[1].args == (le_device,)
+        working.__aexit__.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_other_errors_propagate_without_fallback(self):
+        err = BleakDBusError("org.bluez.Error.Failed", ["le-connection-abort-by-local"])
+        failing = _mock_bleak(enter_side_effect=err)
+
+        with (
+            patch("fichero.printer.sys.platform", "linux"),
+            patch("fichero.printer.BleakClient", return_value=failing),
+            patch("fichero.printer._bluez_connect_le", AsyncMock()) as mock_le,
+        ):
+            with pytest.raises(BleakDBusError):
+                async with connect(ADDR):
+                    pass
+
+        mock_le.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_body_errors_are_not_retried(self):
+        """A BR-profile error raised by the caller's code must not trigger a reconnect."""
+        working = _mock_bleak()
+
+        with (
+            patch("fichero.printer.sys.platform", "linux"),
+            patch("fichero.printer.BleakClient", return_value=working),
+            patch("fichero.printer._bluez_connect_le", AsyncMock()) as mock_le,
+        ):
+            with pytest.raises(BleakDBusError):
+                async with connect(ADDR):
+                    raise BR_ERROR
+
+        mock_le.assert_not_awaited()
+        working.__aexit__.assert_awaited_once()

@@ -55,6 +55,24 @@ Click the Bluetooth icon, pair with the printer, and start designing. Labels sav
 
 Requires Web Bluetooth, so Chrome/Edge/Opera only. Firefox and Safari don't support it.
 
+### Linux: "NetworkError: Unknown error when connecting to the device"
+
+The printer advertises over BLE without the "BR/EDR not supported" flag, so BlueZ treats it as a dual-mode device. BlueZ older than 5.77 (e.g. Ubuntu 24.04 / Linux Mint 22 ship 5.72) then brings up the LE link, also tries Classic Bluetooth profiles, fails with `br-connection-profile-unavailable` and drops the connection. Chrome reports that as the `NetworkError` above.
+
+The CLI works around this automatically (see below). For the web GUI, open the LE link yourself first, then pair in the browser while it is up:
+
+1. Enable BlueZ's experimental API: set `Experimental = true` under `[General]` in `/etc/bluetooth/main.conf`, then `sudo systemctl restart bluetooth`.
+2. Connect over LE only (replace the address with your printer's BLE address, shown as `FICHERO_5836_BLE`):
+
+   ```
+   bluetoothctl remove 22:99:17:B1:F9:6F
+   busctl call org.bluez /org/bluez/hci0 org.bluez.Adapter1 ConnectDevice 'a{sv}' 2 \
+     Address s 22:99:17:B1:F9:6F AddressType s public
+   ```
+
+   Use the adapter name from `bluetoothctl list` / `ls /sys/class/bluetooth` if it is not `hci0`.
+3. Click the Bluetooth icon in the web GUI and pick the printer.
+
 ## CLI Setup
 
 Requires Python 3.10+ and uv. Turn on the printer and run:
@@ -74,6 +92,8 @@ You can also pass it per-command:
 ```
 uv run fichero --address AA:BB:CC:DD:EE:FF info
 ```
+
+On Linux, if BlueZ fails with `br-connection-profile-unavailable` (see [above](#linux-networkerror-unknown-error-when-connecting-to-the-device)), the CLI retries over LE only through BlueZ's `Adapter1.ConnectDevice`. That needs `Experimental = true` in `/etc/bluetooth/main.conf`; the CLI tells you if it is missing.
 
 ## CLI Usage
 
