@@ -136,3 +136,48 @@ class TestBlueZDisconnect:
         with patch("fichero.printer._bluez_bus", bus):
             with pytest.raises(PrinterNotFound):
                 await bluez_disconnect()
+
+
+class TestReuseConnectedLink:
+    @pytest.mark.asyncio
+    async def test_connect_reuses_existing_link_and_reopens_it(self):
+        le_device = MagicMock(address=ADDR)
+        client = _mock_bleak()
+
+        with (
+            patch("fichero.printer._bluez_connected_printer", AsyncMock(return_value=le_device)),
+            patch("fichero.printer.find_printer", AsyncMock()) as mock_find,
+            patch("fichero.printer.BleakClient", return_value=client) as mock_cls,
+            patch("fichero.printer._bluez_connect_le", AsyncMock()) as mock_le,
+        ):
+            async with connect() as pc:
+                assert pc.client is client
+                mock_le.assert_not_awaited()
+
+        mock_find.assert_not_awaited()
+        mock_cls.assert_called_once_with(le_device)
+        mock_le.assert_awaited_once_with(ADDR)
+
+    @pytest.mark.asyncio
+    async def test_fresh_link_is_not_reopened(self):
+        client = _mock_bleak()
+
+        with (
+            patch("fichero.printer.BleakClient", return_value=client),
+            patch("fichero.printer._bluez_connect_le", AsyncMock()) as mock_le,
+        ):
+            async with connect(ADDR):
+                pass
+
+        mock_le.assert_not_awaited()
+
+    def test_find_connected_printer_matches_address_case_insensitively(self):
+        from fichero.printer import _find_connected_printer
+
+        objects = {
+            "/org/bluez/hci0/dev_22": TestBlueZDisconnect._dev("22:99:17:B1:F9:6F", "FICHERO_5836_BLE"),
+        }
+        assert _find_connected_printer(objects, "22:99:17:b1:f9:6f") == (
+            "/org/bluez/hci0/dev_22", "22:99:17:B1:F9:6F",
+        )
+        assert _find_connected_printer(objects, "11:11:11:11:11:11") is None

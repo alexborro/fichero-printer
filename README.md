@@ -136,7 +136,7 @@ uv run fichero connect
 uv run fichero disconnect
 ```
 
-`connect` opens an LE-only link and exits, leaving the link up so the web GUI can use it (see [the NetworkError section](#linux-networkerror-unknown-error-when-connecting-to-the-device)). `disconnect` closes it; without `--address` it picks the connected device whose name starts with `FICHERO` or `D11s_`. `connect` needs `Experimental = true` in `/etc/bluetooth/main.conf`.
+`connect` opens an LE-only link and exits, leaving the link up so the web GUI can use it (see [the NetworkError section](#linux-networkerror-unknown-error-when-connecting-to-the-device)). `disconnect` closes it; without `--address` it picks the connected device whose name starts with `FICHERO` or `D11s_`. `connect` needs `Experimental = true` in `/etc/bluetooth/main.conf`. Other CLI commands reuse a link left up by `connect` and reopen it when they finish, so you can mix the CLI and the web GUI (the web GUI has to reconnect after a CLI command).
 
 ### Settings
 
