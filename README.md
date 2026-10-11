@@ -76,7 +76,7 @@ The CLI works around this automatically (see below). For the web GUI, open the L
      Address s 22:99:17:B1:F9:6F AddressType s public
    ```
 
-   Use the adapter name from `bluetoothctl list` / `ls /sys/class/bluetooth` if it is not `hci0`.
+   Use the adapter name from `ls /sys/class/bluetooth` if it is not `hci0`.
 3. Click the Bluetooth icon in the web GUI and pick the printer.
 4. When done, close the link with `uv run fichero disconnect` (or just turn the printer off).
 
@@ -128,6 +128,15 @@ Text labels accept `--font-size` (default 24) and `--label-height` in pixels (de
 uv run fichero info
 uv run fichero status
 ```
+
+### Holding a connection for the web GUI (Linux)
+
+```
+uv run fichero connect
+uv run fichero disconnect
+```
+
+`connect` opens an LE-only link and exits, leaving the link up so the web GUI can use it (see [the NetworkError section](#linux-networkerror-unknown-error-when-connecting-to-the-device)). `disconnect` closes it; without `--address` it picks the connected device whose name starts with `FICHERO` or `D11s_`. `connect` needs `Experimental = true` in `/etc/bluetooth/main.conf`.
 
 ### Settings
 
