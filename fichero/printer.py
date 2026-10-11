@@ -109,29 +109,40 @@ def _is_bluez_br_profile_error(exc: BaseException) -> bool:
     )
 
 
-async def _bluez_connect_le(address: str) -> BLEDevice:
-    """Open an LE-only link via Adapter1.ConnectDevice. Returns a BLEDevice for it."""
-    from dbus_fast import BusType, Message, MessageType, Variant
+@asynccontextmanager
+async def _bluez_bus():
+    """Yield a call(path, interface, member, signature, body) helper on the system bus."""
+    from dbus_fast import BusType, Message, MessageType
     from dbus_fast.aio import MessageBus
 
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    try:
 
-        async def call(path, interface, member, signature="", body=()):
-            reply = await bus.call(
-                Message(
-                    destination="org.bluez",
-                    path=path,
-                    interface=interface,
-                    member=member,
-                    signature=signature,
-                    body=list(body),
-                )
+    async def call(path, interface, member, signature="", body=()):
+        reply = await bus.call(
+            Message(
+                destination="org.bluez",
+                path=path,
+                interface=interface,
+                member=member,
+                signature=signature,
+                body=list(body),
             )
-            if reply.message_type == MessageType.ERROR:
-                raise BleakDBusError(reply.error_name, reply.body)
-            return reply.body
+        )
+        if reply.message_type == MessageType.ERROR:
+            raise BleakDBusError(reply.error_name, reply.body)
+        return reply.body
 
+    try:
+        yield call
+    finally:
+        bus.disconnect()
+
+
+async def _bluez_connect_le(address: str) -> BLEDevice:
+    """Open an LE-only link via Adapter1.ConnectDevice. Returns a BLEDevice for it."""
+    from dbus_fast import Variant
+
+    async with _bluez_bus() as call:
         (objects,) = await call("/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects")
         suffix = "/dev_" + address.upper().replace(":", "_")
         device_path = next((p for p in objects if p.endswith(suffix)), None)
@@ -176,8 +187,30 @@ async def _bluez_connect_le(address: str) -> BLEDevice:
                 ) from e
             raise
         return BLEDevice(address, None, {"path": device_path, "props": {}})
-    finally:
-        bus.disconnect()
+
+
+async def bluez_disconnect(address: str | None = None) -> str:
+    """Disconnect a printer link left up by `fichero connect`. Returns its address.
+
+    Without an address, picks the connected device whose name looks like a
+    printer (a connected printer stops advertising, so it cannot be scanned).
+    """
+    async with _bluez_bus() as call:
+        (objects,) = await call("/", "org.freedesktop.DBus.ObjectManager", "GetManagedObjects")
+        for path, ifaces in objects.items():
+            props = ifaces.get("org.bluez.Device1")
+            if not props or not props["Connected"].value:
+                continue
+            if address:
+                if props["Address"].value.upper() != address.upper():
+                    continue
+            else:
+                name = props.get("Name")
+                if not name or not name.value.startswith(PRINTER_NAME_PREFIXES):
+                    continue
+            await call(path, "org.bluez.Device1", "Disconnect")
+            return props["Address"].value
+    raise PrinterNotFound(f"No connected printer{' at ' + address if address else ''} found")
 
 
 # --- Status ---

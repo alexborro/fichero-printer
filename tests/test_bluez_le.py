@@ -86,3 +86,53 @@ class TestConnectFallback:
 
         mock_le.assert_not_awaited()
         working.__aexit__.assert_awaited_once()
+
+
+class TestBlueZDisconnect:
+    @staticmethod
+    def _bus(objects):
+        from contextlib import asynccontextmanager
+
+        call = AsyncMock(side_effect=lambda path, iface, member, *a: (
+            [objects] if member == "GetManagedObjects" else []
+        ))
+
+        @asynccontextmanager
+        async def bus():
+            yield call
+
+        return bus, call
+
+    @staticmethod
+    def _dev(address, name, connected=True):
+        from dbus_fast import Variant
+
+        return {"org.bluez.Device1": {
+            "Address": Variant("s", address),
+            "Name": Variant("s", name),
+            "Connected": Variant("b", connected),
+        }}
+
+    @pytest.mark.asyncio
+    async def test_picks_connected_printer_by_name(self):
+        from fichero.printer import bluez_disconnect
+
+        objects = {
+            "/org/bluez/hci0/dev_11": self._dev("11:11:11:11:11:11", "MX Vertical"),
+            "/org/bluez/hci0/dev_22": self._dev("22:22:22:22:22:22", "FICHERO_5836_BLE"),
+        }
+        bus, call = self._bus(objects)
+        with patch("fichero.printer._bluez_bus", bus):
+            assert await bluez_disconnect() == "22:22:22:22:22:22"
+        call.assert_any_await("/org/bluez/hci0/dev_22", "org.bluez.Device1", "Disconnect")
+        assert not any(c.args[0] == "/org/bluez/hci0/dev_11" for c in call.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_raises_when_nothing_connected(self):
+        from fichero.printer import PrinterNotFound, bluez_disconnect
+
+        objects = {"/org/bluez/hci0/dev_22": self._dev("22:22:22:22:22:22", "FICHERO", False)}
+        bus, _ = self._bus(objects)
+        with patch("fichero.printer._bluez_bus", bus):
+            with pytest.raises(PrinterNotFound):
+                await bluez_disconnect()

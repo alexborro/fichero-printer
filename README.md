@@ -78,6 +78,7 @@ The CLI works around this automatically (see below). For the web GUI, open the L
 
    Use the adapter name from `bluetoothctl list` / `ls /sys/class/bluetooth` if it is not `hci0`.
 3. Click the Bluetooth icon in the web GUI and pick the printer.
+4. When done, close the link with `uv run fichero disconnect` (or just turn the printer off).
 
 ## CLI Setup
 
