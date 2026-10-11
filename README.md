@@ -62,7 +62,13 @@ The printer advertises over BLE without the "BR/EDR not supported" flag, so Blue
 The CLI works around this automatically (see below). For the web GUI, open the LE link yourself first, then pair in the browser while it is up:
 
 1. Enable BlueZ's experimental API: set `Experimental = true` under `[General]` in `/etc/bluetooth/main.conf`, then `sudo systemctl restart bluetooth`.
-2. Connect over LE only (replace the address with your printer's BLE address, shown as `FICHERO_5836_BLE`):
+2. Connect over LE only with the CLI, which leaves the link up after it exits:
+
+   ```
+   uv run fichero connect
+   ```
+
+   Or by hand (replace the address with your printer's BLE address, shown as `FICHERO_5836_BLE`):
 
    ```
    bluetoothctl remove 22:99:17:B1:F9:6F
